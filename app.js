@@ -1,4 +1,4 @@
-const STORAGE_KEY = "still-meditation-settings-v3";
+const STORAGE_KEY = "still-meditation-settings-v4";
 
 const DEFAULT_SETTINGS = {
   minutes: 10,
@@ -10,7 +10,7 @@ const DEFAULT_SETTINGS = {
   speechRate: 0.9,
   backgroundSoundEnabled: false,
   backgroundSoundType: "pink",
-  backgroundVolume: 35
+  backgroundVolume: 45
 };
 
 const GUIDED_PROMPTS = [
@@ -249,11 +249,38 @@ async function ensureAudioContext() {
   }
 
   const ctx = window.__stillAudioContext;
-  if (ctx.state === "suspended") {
-    await ctx.resume();
+
+  if (ctx.state !== "running") {
+    try {
+      await ctx.resume();
+    } catch (e) {
+      console.warn("Audio context resume failed", e);
+    }
+  }
+
+  if (!window.__stillMasterGain) {
+    const gain = ctx.createGain();
+    gain.gain.value = 1;
+    gain.connect(ctx.destination);
+    window.__stillMasterGain = gain;
   }
 
   return ctx;
+}
+
+async function unlockAudio() {
+  const ctx = await ensureAudioContext();
+  if (!ctx) return;
+
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+
+  gain.gain.value = 0.0001;
+  osc.connect(gain);
+  gain.connect(window.__stillMasterGain);
+
+  osc.start();
+  osc.stop(ctx.currentTime + 0.02);
 }
 
 async function playBell(type = "start") {
@@ -261,6 +288,8 @@ async function playBell(type = "start") {
   if (!ctx) return;
 
   const now = ctx.currentTime;
+  const master = window.__stillMasterGain;
+
   const frequencies =
     type === "end"
       ? [523.25, 659.25, 783.99]
@@ -271,19 +300,20 @@ async function playBell(type = "start") {
   frequencies.forEach((freq, index) => {
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
+    const startAt = now + index * 0.16;
 
     osc.type = "sine";
-    osc.frequency.value = freq;
+    osc.frequency.setValueAtTime(freq, startAt);
 
-    gain.gain.setValueAtTime(0.0001, now + index * 0.12);
-    gain.gain.exponentialRampToValueAtTime(0.12, now + index * 0.12 + 0.02);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + index * 0.12 + 1.8);
+    gain.gain.setValueAtTime(0.0001, startAt);
+    gain.gain.exponentialRampToValueAtTime(0.22, startAt + 0.03);
+    gain.gain.exponentialRampToValueAtTime(0.0001, startAt + 2.2);
 
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(master);
 
-    osc.start(now + index * 0.12);
-    osc.stop(now + index * 0.12 + 1.85);
+    osc.start(startAt);
+    osc.stop(startAt + 2.25);
   });
 }
 
@@ -322,7 +352,7 @@ function createWhiteNoiseBuffer(ctx, durationSeconds = 2) {
   const data = buffer.getChannelData(0);
 
   for (let i = 0; i < length; i++) {
-    data[i] = Math.random() * 2 - 1;
+    data[i] = (Math.random() * 2 - 1) * 0.7;
   }
 
   return buffer;
@@ -344,7 +374,7 @@ function createPinkNoiseBuffer(ctx, durationSeconds = 2) {
     b3 = 0.86650 * b3 + white * 0.3104856;
     b4 = 0.55000 * b4 + white * 0.5329522;
     b5 = -0.7616 * b5 - white * 0.0168980;
-    data[i] = (b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362) * 0.11;
+    data[i] = ((b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362) * 0.22);
     b6 = white * 0.115926;
   }
 
@@ -362,7 +392,7 @@ function createBrownNoiseBuffer(ctx, durationSeconds = 2) {
   for (let i = 0; i < length; i++) {
     const white = Math.random() * 2 - 1;
     lastOut = (lastOut + 0.02 * white) / 1.02;
-    data[i] = lastOut * 3.5;
+    data[i] = lastOut * 5.0;
   }
 
   return buffer;
@@ -411,10 +441,10 @@ async function startGeneratedNoise(type) {
 
   source.buffer = buffer;
   source.loop = true;
-  gain.gain.value = getBackgroundVolumeGain();
+  gain.gain.value = getBackgroundVolumeGain() * 0.9;
 
   source.connect(gain);
-  gain.connect(ctx.destination);
+  gain.connect(window.__stillMasterGain);
 
   source.start();
 
@@ -445,6 +475,8 @@ async function syncBackgroundSound() {
     return;
   }
 
+  await unlockAudio();
+
   const type = state.backgroundSoundType;
   if (type === "white" || type === "pink" || type === "brown") {
     await startGeneratedNoise(type);
@@ -457,7 +489,7 @@ function updateBackgroundVolumeLive() {
   const gainValue = getBackgroundVolumeGain();
 
   if (state.noiseGainNode) {
-    state.noiseGainNode.gain.value = gainValue;
+    state.noiseGainNode.gain.value = gainValue * 0.9;
   }
 
   if (state.backgroundAudioEl) {
@@ -488,13 +520,15 @@ async function startSession() {
     state.remainingSeconds = state.durationSeconds;
   }
 
+  await unlockAudio();
+
   state.endAt = Date.now() + state.remainingSeconds * 1000;
   state.isRunning = true;
   state.hasStartedOnce = true;
   state.spokenCheckpoints.clear();
 
   if (state.startBell) {
-    playBell("start");
+    await playBell("start");
   }
 
   await syncBackgroundSound();
@@ -525,6 +559,8 @@ async function pauseSession() {
 
 async function resumeSession() {
   if (state.isRunning || state.remainingSeconds <= 0) return;
+
+  await unlockAudio();
 
   state.endAt = Date.now() + state.remainingSeconds * 1000;
   state.isRunning = true;
@@ -573,7 +609,7 @@ async function finishSession() {
   updateButtonStates();
 
   if (state.endBell) {
-    playBell("end");
+    await playBell("end");
   }
 
   if (state.guided) {
@@ -589,8 +625,6 @@ function bindEvents() {
   });
 
   els.startBtn.addEventListener("click", async () => {
-    await ensureAudioContext();
-    populateVoices();
     await startSession();
   });
 
@@ -599,8 +633,6 @@ function bindEvents() {
   });
 
   els.resumeBtn.addEventListener("click", async () => {
-    await ensureAudioContext();
-    populateVoices();
     await resumeSession();
   });
 
@@ -642,13 +674,17 @@ function bindEvents() {
   els.backgroundSoundToggle.addEventListener("change", async (e) => {
     state.backgroundSoundEnabled = e.target.checked;
     saveSettings();
-    await syncBackgroundSound();
+    if (state.isRunning) {
+      await syncBackgroundSound();
+    }
   });
 
   els.backgroundSoundType.addEventListener("change", async (e) => {
     state.backgroundSoundType = e.target.value;
     saveSettings();
-    await syncBackgroundSound();
+    if (state.isRunning && state.backgroundSoundEnabled) {
+      await syncBackgroundSound();
+    }
   });
 
   els.backgroundVolume.addEventListener("input", (e) => {
