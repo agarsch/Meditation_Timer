@@ -1,4 +1,4 @@
-const STORAGE_KEY = "still-meditation-settings-v4";
+const STORAGE_KEY = "still-meditation-settings-v5";
 
 const DEFAULT_SETTINGS = {
   minutes: 10,
@@ -37,8 +37,7 @@ let state = {
   spokenCheckpoints: new Set(),
   voices: [],
   backgroundAudioEl: null,
-  noiseNode: null,
-  noiseGainNode: null
+  bellAudioEl: null
 };
 
 const els = {
@@ -73,6 +72,7 @@ function loadSettings() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return;
+
     const saved = JSON.parse(raw);
 
     state.minutes = saved.minutes ?? DEFAULT_SETTINGS.minutes;
@@ -194,6 +194,7 @@ function randomPrompt() {
 
 function getCheckpointPrompt(phase) {
   const base = randomPrompt();
+
   if (phase === "start") return `Begin by settling in. ${base}`;
   if (phase === "middle") return `Halfway through. ${base}`;
   return `Your session is ending. Notice this moment clearly. ${base}`;
@@ -201,6 +202,7 @@ function getCheckpointPrompt(phase) {
 
 function populateVoices() {
   if (!("speechSynthesis" in window)) return;
+
   const voices = window.speechSynthesis.getVoices();
   if (voices.length) state.voices = voices;
 }
@@ -235,86 +237,40 @@ function speakText(text) {
   utterance.lang = "en-US";
 
   const chosenVoice = pickVoice(state.voiceStyle);
-  if (chosenVoice) utterance.voice = chosenVoice;
+  if (chosenVoice) {
+    utterance.voice = chosenVoice;
+  }
 
   window.speechSynthesis.speak(utterance);
 }
 
-async function ensureAudioContext() {
-  const AudioCtx = window.AudioContext || window.webkitAudioContext;
-  if (!AudioCtx) return null;
-
-  if (!window.__stillAudioContext) {
-    window.__stillAudioContext = new AudioCtx();
-  }
-
-  const ctx = window.__stillAudioContext;
-
-  if (ctx.state !== "running") {
-    try {
-      await ctx.resume();
-    } catch (e) {
-      console.warn("Audio context resume failed", e);
-    }
-  }
-
-  if (!window.__stillMasterGain) {
-    const gain = ctx.createGain();
-    gain.gain.value = 1;
-    gain.connect(ctx.destination);
-    window.__stillMasterGain = gain;
-  }
-
-  return ctx;
-}
-
 async function unlockAudio() {
-  const ctx = await ensureAudioContext();
-  if (!ctx) return;
-
-  const osc = ctx.createOscillator();
-  const gain = ctx.createGain();
-
-  gain.gain.value = 0.0001;
-  osc.connect(gain);
-  gain.connect(window.__stillMasterGain);
-
-  osc.start();
-  osc.stop(ctx.currentTime + 0.02);
+  try {
+    const audio = new Audio("./bell.mp3");
+    audio.volume = 0;
+    await audio.play();
+    audio.pause();
+    audio.currentTime = 0;
+  } catch (e) {
+    console.warn("Audio unlock failed", e);
+  }
 }
 
 async function playBell(type = "start") {
-  const ctx = await ensureAudioContext();
-  if (!ctx) return;
+  try {
+    if (state.bellAudioEl) {
+      state.bellAudioEl.pause();
+      state.bellAudioEl.currentTime = 0;
+    }
 
-  const now = ctx.currentTime;
-  const master = window.__stillMasterGain;
+    const audio = new Audio("./bell.mp3");
+    audio.volume = type === "end" ? 0.9 : 0.8;
+    state.bellAudioEl = audio;
 
-  const frequencies =
-    type === "end"
-      ? [523.25, 659.25, 783.99]
-      : type === "interval"
-      ? [440, 554.37]
-      : [392, 523.25];
-
-  frequencies.forEach((freq, index) => {
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    const startAt = now + index * 0.16;
-
-    osc.type = "sine";
-    osc.frequency.setValueAtTime(freq, startAt);
-
-    gain.gain.setValueAtTime(0.0001, startAt);
-    gain.gain.exponentialRampToValueAtTime(0.22, startAt + 0.03);
-    gain.gain.exponentialRampToValueAtTime(0.0001, startAt + 2.2);
-
-    osc.connect(gain);
-    gain.connect(master);
-
-    osc.start(startAt);
-    osc.stop(startAt + 2.25);
-  });
+    await audio.play();
+  } catch (e) {
+    console.warn("Bell failed", e);
+  }
 }
 
 function maybeSpeakCheckpoint() {
@@ -340,132 +296,31 @@ function maybePlayIntervalBell() {
   if (state.remainingSeconds <= 0) return;
 
   const elapsed = state.durationSeconds - state.remainingSeconds;
+
   if (elapsed > 0 && elapsed % 300 === 0) {
     playBell("interval");
   }
 }
 
-function createWhiteNoiseBuffer(ctx, durationSeconds = 2) {
-  const sampleRate = ctx.sampleRate;
-  const length = sampleRate * durationSeconds;
-  const buffer = ctx.createBuffer(1, length, sampleRate);
-  const data = buffer.getChannelData(0);
-
-  for (let i = 0; i < length; i++) {
-    data[i] = (Math.random() * 2 - 1) * 0.7;
-  }
-
-  return buffer;
-}
-
-function createPinkNoiseBuffer(ctx, durationSeconds = 2) {
-  const sampleRate = ctx.sampleRate;
-  const length = sampleRate * durationSeconds;
-  const buffer = ctx.createBuffer(1, length, sampleRate);
-  const data = buffer.getChannelData(0);
-
-  let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
-
-  for (let i = 0; i < length; i++) {
-    const white = Math.random() * 2 - 1;
-    b0 = 0.99886 * b0 + white * 0.0555179;
-    b1 = 0.99332 * b1 + white * 0.0750759;
-    b2 = 0.96900 * b2 + white * 0.1538520;
-    b3 = 0.86650 * b3 + white * 0.3104856;
-    b4 = 0.55000 * b4 + white * 0.5329522;
-    b5 = -0.7616 * b5 - white * 0.0168980;
-    data[i] = ((b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362) * 0.22);
-    b6 = white * 0.115926;
-  }
-
-  return buffer;
-}
-
-function createBrownNoiseBuffer(ctx, durationSeconds = 2) {
-  const sampleRate = ctx.sampleRate;
-  const length = sampleRate * durationSeconds;
-  const buffer = ctx.createBuffer(1, length, sampleRate);
-  const data = buffer.getChannelData(0);
-
-  let lastOut = 0;
-
-  for (let i = 0; i < length; i++) {
-    const white = Math.random() * 2 - 1;
-    lastOut = (lastOut + 0.02 * white) / 1.02;
-    data[i] = lastOut * 5.0;
-  }
-
-  return buffer;
-}
-
-function getBackgroundVolumeGain() {
-  return Math.max(0, Math.min(1, state.backgroundVolume / 100));
+function getBackgroundFilename(type) {
+  if (type === "white") return "white.mp3";
+  if (type === "pink") return "pink.mp3";
+  if (type === "brown") return "brown.mp3";
+  if (type === "rain") return "rain.mp3";
+  if (type === "stream") return "stream.mp3";
+  return "pink.mp3";
 }
 
 async function stopBackgroundSound() {
-  if (state.noiseNode) {
-    try {
-      state.noiseNode.stop();
-    } catch (_) {}
-    state.noiseNode.disconnect();
-    state.noiseNode = null;
-  }
-
-  if (state.noiseGainNode) {
-    state.noiseGainNode.disconnect();
-    state.noiseGainNode = null;
-  }
-
   if (state.backgroundAudioEl) {
     try {
       state.backgroundAudioEl.pause();
       state.backgroundAudioEl.currentTime = 0;
-    } catch (_) {}
+    } catch (e) {
+      console.warn("Stopping background sound failed", e);
+    }
+
     state.backgroundAudioEl = null;
-  }
-}
-
-async function startGeneratedNoise(type) {
-  const ctx = await ensureAudioContext();
-  if (!ctx) return;
-
-  await stopBackgroundSound();
-
-  let buffer;
-  if (type === "white") buffer = createWhiteNoiseBuffer(ctx);
-  else if (type === "brown") buffer = createBrownNoiseBuffer(ctx);
-  else buffer = createPinkNoiseBuffer(ctx);
-
-  const source = ctx.createBufferSource();
-  const gain = ctx.createGain();
-
-  source.buffer = buffer;
-  source.loop = true;
-  gain.gain.value = getBackgroundVolumeGain() * 0.9;
-
-  source.connect(gain);
-  gain.connect(window.__stillMasterGain);
-
-  source.start();
-
-  state.noiseNode = source;
-  state.noiseGainNode = gain;
-}
-
-async function startAmbientTrack(type) {
-  await stopBackgroundSound();
-
-  const src = type === "rain" ? "./rain.mp3" : "./stream.mp3";
-  const audio = new Audio(src);
-  audio.loop = true;
-  audio.preload = "auto";
-  audio.volume = getBackgroundVolumeGain();
-
-  try {
-    await audio.play();
-    state.backgroundAudioEl = audio;
-  } catch (e) {
-    console.warn("Ambient audio failed to start", e);
   }
 }
 
@@ -475,25 +330,27 @@ async function syncBackgroundSound() {
     return;
   }
 
-  await unlockAudio();
+  await stopBackgroundSound();
 
-  const type = state.backgroundSoundType;
-  if (type === "white" || type === "pink" || type === "brown") {
-    await startGeneratedNoise(type);
-  } else {
-    await startAmbientTrack(type);
+  const file = getBackgroundFilename(state.backgroundSoundType);
+  const audio = new Audio(`./${file}`);
+  audio.loop = true;
+  audio.preload = "auto";
+  audio.volume = Math.max(0, Math.min(1, state.backgroundVolume / 100));
+
+  try {
+    await audio.play();
+    state.backgroundAudioEl = audio;
+  } catch (e) {
+    console.warn("Background sound failed", e);
   }
 }
 
 function updateBackgroundVolumeLive() {
-  const gainValue = getBackgroundVolumeGain();
-
-  if (state.noiseGainNode) {
-    state.noiseGainNode.gain.value = gainValue * 0.9;
-  }
+  const volume = Math.max(0, Math.min(1, state.backgroundVolume / 100));
 
   if (state.backgroundAudioEl) {
-    state.backgroundAudioEl.volume = gainValue;
+    state.backgroundAudioEl.volume = volume;
   }
 }
 
@@ -674,6 +531,7 @@ function bindEvents() {
   els.backgroundSoundToggle.addEventListener("change", async (e) => {
     state.backgroundSoundEnabled = e.target.checked;
     saveSettings();
+
     if (state.isRunning) {
       await syncBackgroundSound();
     }
@@ -682,6 +540,7 @@ function bindEvents() {
   els.backgroundSoundType.addEventListener("change", async (e) => {
     state.backgroundSoundType = e.target.value;
     saveSettings();
+
     if (state.isRunning && state.backgroundSoundEnabled) {
       await syncBackgroundSound();
     }
