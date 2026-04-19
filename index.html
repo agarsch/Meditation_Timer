@@ -1,1 +1,32 @@
-<!DOCTYPE html><html><head><title>Still</title><link rel="stylesheet" href="styles.css"></head><body><h1>Meditation Timer</h1><script src="app.js"></script></body></html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Still</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<h1>Meditation Timer</h1>
+
+<div id="timer">10:00</div>
+
+<div>
+  <button onclick="startTimer()">Start</button>
+  <button onclick="pauseTimer()">Pause</button>
+  <button onclick="resetTimer()">Reset</button>
+</div>
+
+<div>
+  <button onclick="setTime(300)">5 min</button>
+  <button onclick="setTime(600)">10 min</button>
+  <button onclick="setTime(900)">15 min</button>
+  <button onclick="setTime(1200)">20 min</button>
+  <button onclick="setTime(1800)">30 min</button>
+</div>
+
+<script src="app.js"></script>
+
+</body>
+</html>
